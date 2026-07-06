@@ -136,7 +136,7 @@ class TestSlashRegistration:
 
         created = []
 
-        async def fake_post(path, payload):
+        async def fake_post(path, payload, **kw):
             assert path == "commands"
             created.append(payload)
             return {"id": f"cmd-{payload['trigger']}", "token": f"tok-{payload['trigger']}"}
@@ -172,7 +172,7 @@ class TestSlashRegistration:
 
         posted = []
 
-        async def fake_post(path, payload):
+        async def fake_post(path, payload, **kw):
             posted.append(payload["trigger"])
             return {"id": f"cmd-{payload['trigger']}", "token": f"tok-{payload['trigger']}"}
 
@@ -193,6 +193,90 @@ class TestSlashRegistration:
         adapter._api_post = AsyncMock()
         await adapter._register_slash_commands()
         adapter._api_post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stale_url_command_recreated(self, monkeypatch):
+        """A command whose URL is stale (e.g. MATTERMOST_PUBLIC_URL changed) is
+        deleted and recreated pointing at the current callback URL."""
+        adapter = _make_adapter(monkeypatch)
+        new_url = "https://hermes.example.com/mattermost/command"
+
+        async def fake_get(path):
+            if path == "users/me/teams":
+                return [{"id": "team1"}]
+            if path.startswith("commands?team_id=team1"):
+                return [{
+                    "trigger": "new",
+                    "url": "http://127.0.0.1:8066/mattermost/command",  # stale
+                    "token": "old", "id": "c-old",
+                }]
+            return {}
+
+        deleted, posted = [], []
+
+        async def fake_delete(path):
+            deleted.append(path)
+            return True
+
+        async def fake_post(path, payload, **kw):
+            posted.append(payload["trigger"])
+            return {"id": f"c-{payload['trigger']}", "token": f"t-{payload['trigger']}"}
+
+        adapter._api_get = AsyncMock(side_effect=fake_get)
+        adapter._api_delete = AsyncMock(side_effect=fake_delete)
+        adapter._api_post = AsyncMock(side_effect=fake_post)
+
+        await adapter._register_slash_commands()
+
+        assert "commands/c-old" in deleted     # stale command removed
+        assert "new" in posted                  # recreated with the new URL
+        assert "t-new" in adapter._command_tokens
+        assert new_url  # sanity
+
+
+class TestCreateCommandPayload:
+    @pytest.mark.asyncio
+    async def test_description_truncated_to_mattermost_limits(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_post(path, payload, **kw):
+            captured["payload"] = payload
+            return {"id": "c1", "token": "t1"}
+
+        adapter._api_post = AsyncMock(side_effect=fake_post)
+        long_desc = (
+            "Compress conversation context (add 'here [N]' to keep recent N "
+            "turns; --preview shows what would happen) and more padding here"
+        )
+        ok = await adapter._create_slash_command(
+            "team1", "compress", long_desc, "[here N]",
+            "https://hermes.example.com/mattermost/command",
+        )
+        assert ok is True
+        p = captured["payload"]
+        # Mattermost rejects Description > 64; autocomplete desc tolerates more.
+        assert len(p["description"]) <= 64
+        assert len(p["auto_complete_desc"]) <= 128
+        assert p["method"] == "P"
+        assert p["auto_complete"] is True
+
+    @pytest.mark.asyncio
+    async def test_duplicate_trigger_is_benign(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_post(path, payload, **kw):
+            # Simulate Mattermost's duplicate-trigger 400.
+            adapter._last_post_status = 400
+            adapter._last_post_error = (
+                '{"id":"api.command.duplicate_trigger.app_error",'
+                '"message":"This trigger word is already in use."}'
+            )
+            return {}
+
+        adapter._api_post = AsyncMock(side_effect=fake_post)
+        ok = await adapter._create_slash_command("team1", "new", "desc", "", "url")
+        assert ok is False  # not created, but no exception raised
 
 
 # ---------------------------------------------------------------------------

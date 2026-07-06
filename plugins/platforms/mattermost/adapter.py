@@ -61,6 +61,12 @@ DEFAULT_MATTERMOST_CALLBACK_PATH = "/mattermost"
 # Cap the pending-approval map so never-clicked prompts can't grow unbounded.
 _APPROVAL_STATE_MAX = 512
 
+# Mattermost slash-command field limits (Command.IsValid, model/command.go):
+# Description is rejected past 64 chars; the user-visible autocomplete
+# description tolerates more (stored varchar(1024)).
+_MM_DESCRIPTION_MAX = 64
+_MM_AUTOCOMPLETE_DESC_MAX = 128
+
 
 def _env_flag(name: str, default: bool) -> bool:
     """Read a boolean env var, falling back to *default* when unset."""
@@ -230,9 +236,15 @@ class MattermostAdapter(BasePlatformAdapter):
             return {}
 
     async def _api_post(
-        self, path: str, payload: Dict[str, Any]
+        self, path: str, payload: Dict[str, Any], *, log_errors: bool = True
     ) -> Dict[str, Any]:
-        """POST /api/v4/{path} with JSON body."""
+        """POST /api/v4/{path} with JSON body.
+
+        ``log_errors=False`` suppresses the ERROR log for >=400 responses so
+        callers that expect benign 4xx (e.g. a duplicate slash-command
+        trigger) can inspect ``self._last_post_status`` / ``_last_post_error``
+        and log at their own level.
+        """
         import aiohttp
         if ".." in path:
             logger.error("MM API path traversal blocked: %s", path)
@@ -249,12 +261,14 @@ class MattermostAdapter(BasePlatformAdapter):
                 if resp.status >= 400:
                     body = await resp.text()
                     self._last_post_error = body or ""
-                    logger.error("MM API POST %s → %s: %s", path, resp.status, body[:200])
+                    if log_errors:
+                        logger.error("MM API POST %s → %s: %s", path, resp.status, body[:200])
                     return {}
                 return await resp.json()
         except aiohttp.ClientError as exc:
             self._last_post_error = str(exc)
-            logger.error("MM API POST %s network error: %s", path, exc)
+            if log_errors:
+                logger.error("MM API POST %s network error: %s", path, exc)
             return {}
 
     async def _thread_root_for_send(
@@ -715,23 +729,32 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> bool:
         """Create one custom slash command; return True on success.
 
-        Failures (e.g. a reserved trigger, or a race where another process
-        created it) are non-fatal — we log and continue.
+        Failures are non-fatal.  Mattermost caps ``Description`` at 64 chars
+        (``Command.IsValid``) while the user-visible ``auto_complete_desc``
+        tolerates more, so they are truncated independently.  A duplicate
+        trigger (already registered) is expected on restart and logged quietly.
         """
+        desc = " ".join((description or "").split())  # collapse whitespace → single line
         payload = {
             "team_id": team_id,
             "trigger": trigger,
             "method": "P",
             "url": url,
             "auto_complete": True,
-            "auto_complete_desc": (description or "")[:128],
+            "auto_complete_desc": desc[:_MM_AUTOCOMPLETE_DESC_MAX],
             "auto_complete_hint": hint or "",
             "display_name": f"/{trigger}",
-            "description": (description or "")[:128],
+            "description": desc[:_MM_DESCRIPTION_MAX],
         }
-        data = await self._api_post("commands", payload)
+        data = await self._api_post("commands", payload, log_errors=False)
         if not data or "id" not in data:
-            logger.debug("Mattermost: skipped slash command /%s (create failed)", trigger)
+            err = self._last_post_error or ""
+            if "duplicate_trigger" in err:
+                logger.debug("Mattermost: /%s already registered — skipping", trigger)
+            else:
+                logger.warning(
+                    "Mattermost: could not register /%s: %s", trigger, err[:160]
+                )
             return False
         if data.get("token"):
             self._command_tokens.add(data["token"])
@@ -766,18 +789,28 @@ class MattermostAdapter(BasePlatformAdapter):
 
         action_url = f"{self._callback_base()}{self._command_path}"
         total_created = 0
+        total_updated = 0
         for team_id in team_ids:
             existing = await self._list_team_commands(team_id)
             for trigger, description, hint in entries:
                 cmd = existing.get(trigger)
                 if cmd is not None:
-                    # Re-adopt the verification token of a command we own so
-                    # inbound executions validate without recreating it.
                     if str(cmd.get("url", "")).rstrip("/") == action_url.rstrip("/"):
+                        # Same callback URL — re-adopt its verification token
+                        # so inbound executions validate without recreating.
                         if cmd.get("token"):
                             self._command_tokens.add(str(cmd["token"]))
                         if cmd.get("id"):
                             self._created_command_ids.append(str(cmd["id"]))
+                        continue
+                    # Stale callback URL (e.g. MATTERMOST_PUBLIC_URL changed) —
+                    # delete and recreate so the command points at us again.
+                    if cmd.get("id"):
+                        await self._api_delete(f"commands/{cmd['id']}")
+                    if await self._create_slash_command(
+                        team_id, trigger, description, hint, action_url
+                    ):
+                        total_updated += 1
                     continue
                 if await self._create_slash_command(
                     team_id, trigger, description, hint, action_url
@@ -785,9 +818,10 @@ class MattermostAdapter(BasePlatformAdapter):
                     total_created += 1
 
         logger.info(
-            "Mattermost: slash command registration complete — %d created across "
-            "%d team(s); %d skill(s) over cap; %d verification token(s) active",
-            total_created, len(team_ids), hidden, len(self._command_tokens),
+            "Mattermost: slash command registration complete — %d created, %d "
+            "re-pointed across %d team(s); %d skill(s) over cap; %d token(s) active",
+            total_created, total_updated, len(team_ids), hidden,
+            len(self._command_tokens),
         )
 
     # ------------------------------------------------------------------
