@@ -4,11 +4,32 @@ Covers issue #27587 (interactive Allow Once / Allow Session / Always Allow /
 Deny buttons with parity with Discord's ExecApprovalView).
 """
 import json
+import sys
+import unittest.mock as _mock
 
 import pytest
 from unittest.mock import AsyncMock, patch
 
 from gateway.config import PlatformConfig
+
+
+@pytest.fixture(autouse=True)
+def _real_aiohttp():
+    """Ensure the genuine aiohttp is importable for our HTTP handlers.
+
+    A sibling suite (``test_slack``) does
+    ``sys.modules.setdefault("aiohttp", MagicMock())`` at import time; if
+    aiohttp had not been imported yet, that installs a mock globally and turns
+    ``web.json_response`` into a MagicMock. Restore the real module so these
+    tests are order-independent.
+    """
+    mod = sys.modules.get("aiohttp")
+    if isinstance(mod, _mock.NonCallableMock):
+        for name in [m for m in list(sys.modules) if m == "aiohttp" or m.startswith("aiohttp.")]:
+            del sys.modules[name]
+        import aiohttp  # noqa: F401
+        import aiohttp.web  # noqa: F401
+    yield
 
 
 def _make_adapter(monkeypatch, *, public_url="https://hermes.example.com", extra=None):
