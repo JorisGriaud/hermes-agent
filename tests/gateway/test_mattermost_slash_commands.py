@@ -46,16 +46,38 @@ class TestMattermostCommandHelper:
         assert _sanitize_mattermost_name("weird!!name") == "weirdname"
         assert _sanitize_mattermost_name("__x__") == "x"
 
-    def test_core_commands_present_and_help_excluded(self):
+    def test_core_commands_present_and_reserved_excluded(self):
         from hermes_cli.commands import mattermost_slash_commands
         entries, hidden = mattermost_slash_commands()
         triggers = [t for t, _d, _h in entries]
         # Operational core commands must be registrable.
-        for expected in ("approve", "deny", "new", "model", "status", "stop"):
+        for expected in ("approve", "deny", "new", "model", "stop"):
             assert expected in triggers, f"missing core trigger {expected!r}"
-        # Mattermost reserves /help — must never be offered for registration.
+        # Triggers shadowed by Mattermost built-ins must never be offered:
+        # /help is rejected at creation, /status is silently shadowed at runtime.
         assert "help" not in triggers
+        assert "status" not in triggers
         assert isinstance(hidden, int)
+
+    def test_menu_max_commands_reads_config_and_clamps(self, monkeypatch):
+        import hermes_cli.config as cfg
+        from hermes_cli.commands import mattermost_menu_max_commands, _DEFAULT_MATTERMOST_MAX_COMMANDS
+
+        # No config → default.
+        monkeypatch.setattr(cfg, "read_raw_config", lambda: {})
+        assert mattermost_menu_max_commands() == _DEFAULT_MATTERMOST_MAX_COMMANDS
+
+        # Configured value is honored.
+        monkeypatch.setattr(cfg, "read_raw_config", lambda: {
+            "platforms": {"mattermost": {"extra": {"command_menu": {"max_commands": 40}}}}
+        })
+        assert mattermost_menu_max_commands() == 40
+
+        # Out-of-range values are clamped to [1, 200].
+        monkeypatch.setattr(cfg, "read_raw_config", lambda: {
+            "platforms": {"mattermost": {"extra": {"command_menu": {"max_commands": 9999}}}}
+        })
+        assert mattermost_menu_max_commands() == 200
 
     def test_triggers_are_valid_and_unique(self):
         import re

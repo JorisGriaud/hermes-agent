@@ -1138,6 +1138,10 @@ _MM_RESERVED_COMMANDS = frozenset({
     "header", "help", "invite", "invite_people", "join", "kick", "leave",
     "logout", "me", "msg", "mute", "offline", "online", "open", "purpose",
     "remove", "rename", "search", "settings", "shortcuts", "shrug",
+    # /status is served by a Mattermost built-in that shadows any custom
+    # command with the same trigger at runtime (MM lets you *create* it, but
+    # it never fires), so skip it rather than register a dead entry.
+    "status",
 })
 
 # Mattermost imposes no hard per-team cap on custom slash commands, but each
@@ -1253,6 +1257,28 @@ def mattermost_slash_commands(
     # Skill/plugin entries carry no argument hint.
     all_commands.extend((n, d, "") for n, d, _cmd_key in entries)
     return all_commands[:max_commands], hidden_count + hidden_core
+
+
+def mattermost_menu_max_commands() -> int:
+    """Return the configured Mattermost slash-command cap with safe bounds.
+
+    Reads ``platforms.mattermost.extra.command_menu.max_commands`` (parity with
+    :func:`telegram_menu_max_commands`); falls back to the default.  Clamped to
+    ``[1, 200]`` — Mattermost has no hard per-team limit, but each command is a
+    separate POST on connect, so the ceiling bounds startup work.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        raw_cfg = read_raw_config() or {}
+    except Exception:
+        raw_cfg = {}
+    menu_cfg = _nested_mapping(raw_cfg, "platforms", "mattermost", "extra", "command_menu")
+    value = menu_cfg.get("max_commands", _DEFAULT_MATTERMOST_MAX_COMMANDS)
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        value = _DEFAULT_MATTERMOST_MAX_COMMANDS
+    return max(1, min(200, value))
 
 
 # ---------------------------------------------------------------------------

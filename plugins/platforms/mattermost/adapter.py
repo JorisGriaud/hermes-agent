@@ -773,8 +773,20 @@ class MattermostAdapter(BasePlatformAdapter):
         logged and never block connect.
         """
         try:
-            from hermes_cli.commands import mattermost_slash_commands
-            entries, hidden = mattermost_slash_commands()
+            from hermes_cli.commands import (
+                mattermost_slash_commands,
+                mattermost_menu_max_commands,
+            )
+            # MATTERMOST_MAX_COMMANDS env overrides the configured cap.
+            env_max = os.getenv("MATTERMOST_MAX_COMMANDS")
+            if env_max:
+                try:
+                    max_commands = max(1, min(200, int(env_max)))
+                except ValueError:
+                    max_commands = mattermost_menu_max_commands()
+            else:
+                max_commands = mattermost_menu_max_commands()
+            entries, hidden = mattermost_slash_commands(max_commands)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Mattermost: could not build slash command list: %s", exc)
             return

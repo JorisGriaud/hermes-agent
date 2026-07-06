@@ -71,3 +71,7 @@ optional_env:
     description: "Comma-separated team IDs to register slash commands in. Empty = every team the bot belongs to."
     prompt: "Team IDs for slash commands (comma-separated)"
     password: false
+  - name: MATTERMOST_MAX_COMMANDS
+    description: "Cap on the number of native slash commands registered (default 100, clamped 1-200). Core commands are kept first; skills are trimmed. Overrides platforms.mattermost.extra.command_menu.max_commands."
+    prompt: "Max slash commands"
+    password: false
