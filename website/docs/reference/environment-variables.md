@@ -433,6 +433,12 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATTERMOST_REQUIRE_MENTION` | Require `@mention` in channels (default: `true`). Set to `false` to respond to all messages. |
 | `MATTERMOST_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where bot responds without `@mention` |
 | `MATTERMOST_REPLY_MODE` | Reply style: `thread` (threaded replies) or `off` (flat messages, default) |
+| `MATTERMOST_PUBLIC_URL` | Public base URL the Mattermost server uses to reach Hermes for native slash-command autocomplete and interactive approval buttons (e.g. `https://hermes.example.com`). Required for those features. |
+| `MATTERMOST_WEBHOOK_HOST` | Local interface the callback server binds to (default `0.0.0.0`) |
+| `MATTERMOST_WEBHOOK_PORT` | Local port the callback server binds to (default `8066`) |
+| `MATTERMOST_REGISTER_COMMANDS` | Register `COMMAND_REGISTRY` as native slash commands on connect (default `true`; needs the bot to hold `manage_slash_commands`) |
+| `MATTERMOST_CLEANUP_COMMANDS` | Delete the slash commands Hermes created when the gateway stops (default `false`) |
+| `MATTERMOST_TEAM_ID` | Comma-separated team IDs to register slash commands in (default: every team the bot belongs to) |
 | `MATRIX_HOMESERVER` | Matrix homeserver URL (e.g. `https://matrix.org`) |
 | `MATRIX_ACCESS_TOKEN` | Matrix access token for bot authentication |
 | `MATRIX_USER_ID` | Matrix user ID (e.g. `@hermes:matrix.org`) — required for password login, optional with access token |

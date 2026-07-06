@@ -45,6 +45,20 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 
 **Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
 
+### Slash-command autocomplete & interactive approvals
+
+Some platforms register Hermes commands as **native slash commands** (so typing `/` shows an autocomplete menu) and render dangerous-command approvals as **tap-to-approve buttons** instead of a typed `/approve`. This is the subset with confirmed native support:
+
+| Platform | Slash-command autocomplete | Interactive approval buttons |
+|----------|:--------------------------:|:----------------------------:|
+| Telegram | ✅ | ✅ |
+| Discord | ✅ | ✅ |
+| Slack | ✅ | ✅ |
+| Mattermost | ✅ | ✅ |
+| WhatsApp | — | ✅ |
+
+On platforms without native slash commands, typing a command still dispatches it; on platforms without approval buttons, approvals fall back to the typed `/approve` / `/deny` flow. Mattermost's native support requires a public callback URL the Mattermost server can reach — see [Mattermost → Slash commands & interactive approvals](./mattermost.md#slash-commands--interactive-approvals).
+
 ## Architecture
 
 ```mermaid
