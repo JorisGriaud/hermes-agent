@@ -439,6 +439,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATTERMOST_REGISTER_COMMANDS` | Register `COMMAND_REGISTRY` as native slash commands on connect (default `true`; needs the bot to hold `manage_slash_commands`) |
 | `MATTERMOST_CLEANUP_COMMANDS` | Delete the slash commands Hermes created when the gateway stops (default `false`) |
 | `MATTERMOST_TEAM_ID` | Comma-separated team IDs to register slash commands in (default: every team the bot belongs to) |
+| `MATTERMOST_MAX_COMMANDS` | Cap on native slash commands registered (default `100`, clamped 1–200). Core commands kept first; skills trimmed. Overrides `platforms.mattermost.extra.command_menu.max_commands`. |
 | `MATRIX_HOMESERVER` | Matrix homeserver URL (e.g. `https://matrix.org`) |
 | `MATRIX_ACCESS_TOKEN` | Matrix access token for bot authentication |
 | `MATRIX_USER_ID` | Matrix user ID (e.g. `@hermes:matrix.org`) — required for password login, optional with access token |

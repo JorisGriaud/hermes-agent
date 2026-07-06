@@ -218,6 +218,18 @@ Both features are **callback-based**: the Mattermost server POSTs to Hermes when
 
    If the token lacks this permission, registration is skipped with a logged warning and the bot still runs — you just won't get autocomplete.
 
+3. **Allow Mattermost to call back to Hermes (SSRF allowlist).** Mattermost blocks outgoing connections (slash-command and button callbacks) to **private/internal IPs** by default, as SSRF protection. If Hermes runs on a private address (e.g. `192.168.x.x`, `10.x.x.x`, `127.0.0.1`), you **must** allow it, or clicking a button shows **"Action integration error"** and slash commands fail even though registration succeeded:
+
+   - **System Console → Environment → Developer → "Allow untrusted internal connections to"** → add the Hermes host (IP or CIDR, **not** a URL), e.g. `192.168.20.230` or `192.168.20.0/24`.
+   - Or, for a Docker deployment, set it on the Mattermost container:
+
+     ```yaml
+     environment:
+       MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS: "192.168.20.230"
+     ```
+
+   **Restart Mattermost** after changing this. (Not needed if `MATTERMOST_PUBLIC_URL` is a public HTTPS hostname that resolves to a public IP.)
+
 :::warning[The callback endpoint is public]
 `MATTERMOST_PUBLIC_URL` is reachable by anyone who can hit it. Hermes defends the endpoints two ways: slash-command executions are rejected unless they present the per-command verification **token** Mattermost issued at registration, and button clicks must carry the per-approval **secret** embedded in the message. In both cases the acting user is then checked against `MATTERMOST_ALLOWED_USERS` (and the gateway allowlist / pairing store) before anything happens. Keep the endpoint behind HTTPS.
 :::
@@ -235,7 +247,20 @@ MATTERMOST_PUBLIC_URL=https://hermes.example.com
 # MATTERMOST_CLEANUP_COMMANDS=false      # delete them again on shutdown
 # MATTERMOST_TEAM_ID=team1,team2         # limit registration to these teams
 #                                        # (default: every team the bot is in)
+# MATTERMOST_MAX_COMMANDS=100            # cap the number of registered commands
 ```
+
+The command cap can also be set in `config.yaml` (parity with Telegram):
+
+```yaml
+platforms:
+  mattermost:
+    extra:
+      command_menu:
+        max_commands: 60   # core commands are kept first; skills fill the rest
+```
+
+If you have many skills installed, the `/` menu can get crowded — lowering `max_commands` (e.g. to ~50) keeps the operational core commands and trims the skill entries first.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -249,7 +274,7 @@ MATTERMOST_PUBLIC_URL=https://hermes.example.com
 ### How it behaves
 
 - **Autocomplete.** On connect, Hermes registers its commands (core commands first, then plugin commands, then skills — trimming only skills if a cap is hit, capped at 100 per team by default). Type `/` in a channel where the bot is present and you'll see `/model`, `/new`, `/status`, `/approve`, `/deny`, and the rest with descriptions and argument hints. Registration is **idempotent**: existing triggers are left untouched and re-adopted on restart, so restarting the gateway doesn't create duplicates.
-- **Reserved triggers.** Mattermost's built-in commands can't be overridden — most notably `/help`. Hermes skips those triggers automatically; use Mattermost's built-in `/help` or type `help` to the bot.
+- **Reserved triggers.** Mattermost's built-in commands can't be overridden — e.g. `/help` (rejected at creation) and `/status` (silently shadowed at runtime). Hermes skips those triggers automatically, so `/status` in Mattermost sets your user status as usual; reach Hermes's status via `@mention` instead.
 - **Interactive approvals.** When the agent hits a dangerous command, Hermes posts a message with four buttons — **Allow Once**, **Allow Session**, **Always Allow**, **Deny** — matching the Discord experience. Tapping a button (as an authorized user) resolves the pending command and rewrites the message to show the decision, disabling the buttons. If `MATTERMOST_PUBLIC_URL` is unset, approvals fall back to the typed `/approve` / `/deny` prompt.
 
 :::info[Reverse proxy]
