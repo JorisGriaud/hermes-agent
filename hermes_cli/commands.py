@@ -1120,6 +1120,142 @@ def discord_skill_commands_by_category(
 
 
 # ---------------------------------------------------------------------------
+# Mattermost native slash commands
+# ---------------------------------------------------------------------------
+
+# Mattermost custom slash-command triggers are lowercased server-side and may
+# not contain whitespace.  Hyphens and underscores ARE allowed, so — unlike
+# Telegram — we preserve hyphens (``/reload-mcp`` stays ``reload-mcp``).
+_MM_INVALID_CHARS = re.compile(r"[^a-z0-9_\-]")
+_MM_MULTI_SEP = re.compile(r"[-_]{2,}")
+
+# Built-in Mattermost slash commands that cannot be registered as custom
+# commands — ``POST /commands`` rejects them ("This trigger word is already
+# in use").  Skipping them keeps registration quiet and idempotent.
+# https://docs.mattermost.com/collaborate/run-slash-commands.html
+_MM_RESERVED_COMMANDS = frozenset({
+    "away", "code", "collapse", "dnd", "echo", "expand", "groupmsg",
+    "header", "help", "invite", "invite_people", "join", "kick", "leave",
+    "logout", "me", "msg", "mute", "offline", "online", "open", "purpose",
+    "remove", "rename", "search", "settings", "shortcuts", "shrug",
+})
+
+# Mattermost imposes no hard per-team cap on custom slash commands, but each
+# command is a separate POST on connect.  A generous default keeps every
+# built-in plus common skills registered while bounding startup API calls;
+# tune via ``platforms.mattermost.extra.command_menu.max_commands``.
+_DEFAULT_MATTERMOST_MAX_COMMANDS = 100
+
+
+def _sanitize_mattermost_name(raw: str) -> str:
+    """Convert a command/skill/plugin name to a valid Mattermost trigger.
+
+    Mattermost triggers are lowercase, whitespace-free, and may contain
+    hyphens and underscores.  Steps: lowercase → strip a leading slash →
+    replace spaces with hyphens → drop other invalid chars → collapse
+    repeated separators → strip leading/trailing separators.
+    """
+    name = raw.lower().lstrip("/").strip()
+    name = name.replace(" ", "-")
+    name = _MM_INVALID_CHARS.sub("", name)
+    name = _MM_MULTI_SEP.sub("-", name)
+    return name.strip("-_")
+
+
+def mattermost_core_commands() -> list[tuple[str, str, str]]:
+    """Return ``(trigger, description, autocomplete_hint)`` for core + plugin commands.
+
+    Mirrors :func:`telegram_bot_commands` but keeps hyphens (valid in
+    Mattermost triggers) and carries ``args_hint`` so the adapter can populate
+    Mattermost's ``auto_complete_hint``.  Reserved built-in triggers (e.g.
+    ``help``) are dropped because Mattermost refuses to register them.
+    """
+    overrides = _resolve_config_gates()
+    result: list[tuple[str, str, str]] = []
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        name = _sanitize_mattermost_name(cmd.name)
+        if name and name not in _MM_RESERVED_COMMANDS:
+            result.append((name, cmd.description, cmd.args_hint or ""))
+    for name, description, args_hint in _iter_plugin_command_entries():
+        # Plugin commands that require arguments are excluded — plugins may
+        # not provide a no-arg usage fallback (parity with Telegram).
+        if _requires_argument(args_hint):
+            continue
+        mm_name = _sanitize_mattermost_name(name)
+        if mm_name and mm_name not in _MM_RESERVED_COMMANDS:
+            result.append((mm_name, description, args_hint or ""))
+    return result
+
+
+def _prioritize_mattermost_commands(
+    commands: list[tuple[str, str, str]],
+) -> list[tuple[str, str, str]]:
+    """Order core commands by the shared operational-priority list.
+
+    Reuses the Telegram priority ordering (help/new/stop/status/…): the same
+    operational commands should survive a menu cap on every platform.
+    """
+    priority = {
+        name: index
+        for index, name in enumerate(_telegram_effective_priority())
+    }
+    return [
+        command
+        for _index, command in sorted(
+            enumerate(commands),
+            key=lambda item: (0, priority[item[1][0]], item[0])
+            if item[1][0] in priority
+            else (1, item[0]),
+        )
+    ]
+
+
+def mattermost_slash_commands(
+    max_commands: int = _DEFAULT_MATTERMOST_MAX_COMMANDS,
+) -> tuple[list[tuple[str, str, str]], int]:
+    """Return Mattermost slash-command definitions with the shared cap/priority.
+
+    Priority order (identical contract to :func:`telegram_menu_commands`):
+
+      1. Core ``CommandDef`` commands (always included)
+      2. Plugin slash commands (take precedence over skills)
+      3. Built-in skill commands (fill remaining slots, alphabetical)
+
+    Only skills are trimmed when the cap is hit.  Hub-installed skills and
+    skills disabled for the ``"mattermost"`` platform are excluded.
+
+    Returns:
+        ``(entries, hidden_count)`` where *entries* is a list of
+        ``(trigger, description, autocomplete_hint)`` triples and
+        *hidden_count* is the number of skill entries dropped at the cap.
+    """
+    core = _prioritize_mattermost_commands(mattermost_core_commands())
+    # Clamp names to 32 chars + drop duplicate triggers (shared with
+    # Telegram/Discord); the arg hint rides along as the third tuple field.
+    core = [
+        (n, d, h)
+        for n, d, h in _clamp_command_names(core, set())
+    ]
+    reserved_names = {n for n, _d, _h in core}
+    all_commands: list[tuple[str, str, str]] = list(core)
+    hidden_core = max(0, len(all_commands) - max_commands)
+
+    remaining_slots = max(0, max_commands - len(all_commands))
+    entries, hidden_count = _collect_gateway_skill_entries(
+        platform="mattermost",
+        max_slots=remaining_slots,
+        reserved_names=reserved_names,
+        desc_limit=128,
+        sanitize_name=_sanitize_mattermost_name,
+    )
+    # Skill/plugin entries carry no argument hint.
+    all_commands.extend((n, d, "") for n, d, _cmd_key in entries)
+    return all_commands[:max_commands], hidden_count + hidden_core
+
+
+# ---------------------------------------------------------------------------
 # Slack native slash commands
 # ---------------------------------------------------------------------------
 
