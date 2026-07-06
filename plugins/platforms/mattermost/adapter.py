@@ -524,6 +524,7 @@ class MattermostAdapter(BasePlatformAdapter):
         try:
             app = web.Application()
             app.router.add_post(self._command_path, self._handle_slash_command)
+            app.router.add_post(self._action_path, self._handle_interactive)
             app.router.add_get(self._health_path, self._handle_health)
             self._app = app
             self._runner = web.AppRunner(app)
@@ -531,10 +532,10 @@ class MattermostAdapter(BasePlatformAdapter):
             self._site = web.TCPSite(self._runner, self._webhook_host, self._webhook_port)
             await self._site.start()
             logger.info(
-                "Mattermost: callback server listening on %s:%d (command=%s); "
-                "Mattermost will reach it at %s%s",
-                self._webhook_host, self._webhook_port, self._command_path,
-                self._callback_base(), self._command_path,
+                "Mattermost: callback server listening on %s:%d (command=%s, action=%s); "
+                "Mattermost will reach it at %s",
+                self._webhook_host, self._webhook_port,
+                self._command_path, self._action_path, self._callback_base(),
             )
         except OSError as exc:
             logger.warning(
@@ -788,6 +789,180 @@ class MattermostAdapter(BasePlatformAdapter):
             "%d team(s); %d skill(s) over cap; %d verification token(s) active",
             total_created, len(team_ids), hidden, len(self._command_tokens),
         )
+
+    # ------------------------------------------------------------------
+    # Interactive approval buttons (dangerous-command approval)
+    # ------------------------------------------------------------------
+
+    def _store_approval(self, approval_id: str, session_key: str, secret: str) -> None:
+        """Record a pending approval, dropping the oldest entry past the cap."""
+        if len(self._exec_approval_state) >= _APPROVAL_STATE_MAX:
+            try:
+                oldest = next(iter(self._exec_approval_state))
+                self._exec_approval_state.pop(oldest, None)
+            except StopIteration:
+                pass
+        self._exec_approval_state[approval_id] = {
+            "session_key": session_key,
+            "secret": secret,
+        }
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Post a dangerous-command approval prompt with interactive buttons.
+
+        Renders a Mattermost message attachment with four action buttons —
+        Allow Once / Allow Session / Always Allow / Deny — each carrying an
+        ``integration.url`` pointing back at this adapter's callback server.
+        Tapping a button resolves the waiting agent thread via
+        ``tools.approval.resolve_gateway_approval`` — the same mechanism as
+        the text ``/approve`` flow (mirrors Discord's ``ExecApprovalView``).
+
+        Returns an error result when no reachable callback URL is configured
+        so the gateway falls back to the plain-text approval prompt.
+        """
+        if not self._session or self._session.closed:
+            return SendResult(success=False, error="Not connected")
+        if not self._callbacks_enabled:
+            return SendResult(
+                success=False,
+                error="Interactive approvals require MATTERMOST_PUBLIC_URL",
+            )
+
+        approval_id = uuid.uuid4().hex[:16]
+        secret = secrets.token_urlsafe(16)
+        action_url = f"{self._callback_base()}{self._action_path}"
+
+        cmd = command or ""
+        cmd_preview = cmd if len(cmd) <= 3500 else cmd[:3500] + "..."
+
+        def _action(choice: str, name: str, style: Optional[str] = None) -> Dict[str, Any]:
+            action: Dict[str, Any] = {
+                "id": choice,
+                "name": name,
+                "integration": {
+                    "url": action_url,
+                    "context": {
+                        "approval_id": approval_id,
+                        "choice": choice,
+                        "secret": secret,
+                    },
+                },
+            }
+            if style:
+                action["style"] = style
+            return action
+
+        attachment = {
+            "color": "#E0A800",
+            "title": "⚠️ Command Approval Required",
+            "text": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
+            "actions": [
+                _action("once", "Allow Once", "primary"),
+                _action("session", "Allow Session"),
+                _action("always", "Always Allow"),
+                _action("deny", "Deny", "danger"),
+            ],
+        }
+        payload: Dict[str, Any] = {
+            "channel_id": chat_id,
+            "props": {"attachments": [attachment]},
+        }
+        resolved_root = await self._thread_root_for_send(None, metadata)
+        if resolved_root:
+            payload["root_id"] = resolved_root
+
+        data = await self._post_preserving_thread(chat_id, payload, metadata)
+        if not data or "id" not in data:
+            return SendResult(success=False, error="Failed to post approval prompt")
+
+        self._store_approval(approval_id, session_key, secret)
+        return SendResult(success=True, message_id=data["id"])
+
+    async def _handle_interactive(self, request: Any) -> Any:
+        """Handle an interactive message button click from Mattermost.
+
+        Mattermost POSTs JSON with ``user_id``, ``user_name``, ``channel_id``
+        and the ``context`` dict we attached to the button.  We verify the
+        per-approval secret (proving the click came from our message),
+        authorize the clicking user, resolve the approval, and return an
+        ``update`` payload that rewrites the post and drops the buttons so the
+        decision can't be re-clicked.
+        """
+        from aiohttp import web
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"ephemeral_text": "Invalid request"}, status=400)
+
+        ctx = body.get("context") or {}
+        approval_id = str(ctx.get("approval_id", ""))
+        choice = str(ctx.get("choice", ""))
+        secret = str(ctx.get("secret", ""))
+        user_id = str(body.get("user_id", ""))
+        user_name = str(body.get("user_name", "")).lstrip("@") or "user"
+
+        if choice not in {"once", "session", "always", "deny"}:
+            return web.json_response({"ephemeral_text": "Invalid action."}, status=400)
+
+        if not self._is_action_user_authorized(user_id):
+            return web.json_response(
+                {"ephemeral_text": "⛔ You are not authorized to approve commands."}
+            )
+
+        state = self._exec_approval_state.get(approval_id)
+        if not state:
+            # Already resolved (or expired / cross-restart) — clear the
+            # buttons so a stale prompt can't be re-clicked.
+            return web.json_response({
+                "update": {
+                    "message": "⏱ This approval prompt has already been resolved.",
+                    "props": {"attachments": []},
+                }
+            })
+
+        if not secrets.compare_digest(secret, str(state.get("secret", ""))):
+            logger.warning(
+                "Mattermost: approval action with bad secret (approval_id=%s)", approval_id
+            )
+            return web.json_response(
+                {"ephemeral_text": "⛔ Invalid approval token."}, status=403
+            )
+
+        # Single-use: pop so a double-click lands on the "already resolved" path.
+        session_key = self._exec_approval_state.pop(approval_id, {}).get("session_key", "")
+
+        label_map = {
+            "once": "✅ Approved once",
+            "session": "✅ Approved for this session",
+            "always": "✅ Approved permanently",
+            "deny": "❌ Denied",
+        }
+        label = label_map.get(choice, "Resolved")
+
+        try:
+            from tools.approval import resolve_gateway_approval
+            count = resolve_gateway_approval(session_key, choice)
+            logger.info(
+                "Mattermost button resolved %d approval(s) for session %s "
+                "(choice=%s, user=%s)",
+                count, session_key, choice, user_name,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Mattermost: failed to resolve gateway approval: %s", exc)
+
+        return web.json_response({
+            "update": {
+                "message": f"{label} by @{user_name}",
+                "props": {"attachments": []},
+            }
+        })
 
 
     async def _resolve_root_id(self, post_id: str) -> str:
