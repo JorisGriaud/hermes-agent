@@ -45,6 +45,20 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 
 **Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
 
+### Slash-command autocomplete & interactive approvals
+
+Some platforms register Hermes commands as **native slash commands** (so typing `/` shows an autocomplete menu) and render dangerous-command approvals as **tap-to-approve buttons** instead of a typed `/approve`. This is the subset with confirmed native support:
+
+| Platform | Slash-command autocomplete | Interactive approval buttons |
+|----------|:--------------------------:|:----------------------------:|
+| Telegram | ✅ | ✅ |
+| Discord | ✅ | ✅ |
+| Slack | ✅ | ✅ |
+| Mattermost | ✅ | ✅ |
+| WhatsApp | — | ✅ |
+
+On platforms without native slash commands, typing a command still dispatches it; on platforms without approval buttons, approvals fall back to the typed `/approve` / `/deny` flow. Mattermost's native support requires a public callback URL the Mattermost server can reach — see [Mattermost → Slash commands & interactive approvals](./mattermost.md#slash-commands--interactive-approvals).
+
 ## Architecture
 
 ```mermaid
@@ -191,13 +205,23 @@ Sessions persist across messages until they reset. The agent remembers your conv
 
 ### Reset Policies
 
-Sessions reset based on configurable policies:
+**By default sessions never auto-reset** — context lives until you `/reset`
+manually or context compression kicks in. If you want automatic resets, opt in
+with the `session_reset` section in `~/.hermes/config.yaml`:
 
-| Policy | Default | Description |
-|--------|---------|-------------|
-| Daily | 4:00 AM | Reset at a specific hour each day |
-| Idle | 1440 min | Reset after N minutes of inactivity |
-| Both | (combined) | Whichever triggers first |
+```yaml
+session_reset:
+  mode: idle        # "idle", "daily", "both", or "none" (default)
+  idle_minutes: 1440  # for idle/both: minutes of inactivity before reset
+  at_hour: 4          # for daily/both: hour of day (0-23, local time)
+```
+
+| Mode | Description |
+|------|-------------|
+| `none` | Never auto-reset (default) |
+| `daily` | Reset at a specific hour each day |
+| `idle` | Reset after N minutes of inactivity |
+| `both` | Whichever triggers first |
 
 A live background process (started with `terminal(background=true)`) normally
 protects its session from resetting so output isn't lost. To stop a forgotten

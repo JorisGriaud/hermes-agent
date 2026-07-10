@@ -47,3 +47,31 @@ optional_env:
     description: "If set, the bot only responds in these channels (whitelist)."
     prompt: "Allowed channel IDs (comma-separated)"
     password: false
+  - name: MATTERMOST_PUBLIC_URL
+    description: "Public base URL the Mattermost server uses to reach Hermes for slash-command autocomplete and interactive approval buttons (e.g. https://hermes.example.com). Required for those features."
+    prompt: "Public callback base URL"
+    password: false
+  - name: MATTERMOST_WEBHOOK_HOST
+    description: "Host/interface the callback server binds to (default 0.0.0.0)."
+    prompt: "Callback bind host"
+    password: false
+  - name: MATTERMOST_WEBHOOK_PORT
+    description: "Port the callback server binds to (default 8066)."
+    prompt: "Callback bind port"
+    password: false
+  - name: MATTERMOST_REGISTER_COMMANDS
+    description: "Register COMMAND_REGISTRY as native slash commands on connect (default true). Needs the bot to hold manage_slash_commands."
+    prompt: "Register slash commands? (true/false)"
+    password: false
+  - name: MATTERMOST_CLEANUP_COMMANDS
+    description: "Delete the slash commands Hermes created when the gateway stops (default false; leave off for idempotent restarts)."
+    prompt: "Delete slash commands on shutdown? (true/false)"
+    password: false
+  - name: MATTERMOST_TEAM_ID
+    description: "Comma-separated team IDs to register slash commands in. Empty = every team the bot belongs to."
+    prompt: "Team IDs for slash commands (comma-separated)"
+    password: false
+  - name: MATTERMOST_MAX_COMMANDS
+    description: "Cap on the number of native slash commands registered (default 100, clamped 1-200). Core commands are kept first; skills are trimmed. Overrides platforms.mattermost.extra.command_menu.max_commands."
+    prompt: "Max slash commands"
+    password: false

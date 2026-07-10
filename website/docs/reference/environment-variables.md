@@ -433,6 +433,13 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATTERMOST_REQUIRE_MENTION` | Require `@mention` in channels (default: `true`). Set to `false` to respond to all messages. |
 | `MATTERMOST_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where bot responds without `@mention` |
 | `MATTERMOST_REPLY_MODE` | Reply style: `thread` (threaded replies) or `off` (flat messages, default) |
+| `MATTERMOST_PUBLIC_URL` | Public base URL the Mattermost server uses to reach Hermes for native slash-command autocomplete and interactive approval buttons (e.g. `https://hermes.example.com`). Required for those features. |
+| `MATTERMOST_WEBHOOK_HOST` | Local interface the callback server binds to (default `0.0.0.0`) |
+| `MATTERMOST_WEBHOOK_PORT` | Local port the callback server binds to (default `8066`) |
+| `MATTERMOST_REGISTER_COMMANDS` | Register `COMMAND_REGISTRY` as native slash commands on connect (default `true`; needs the bot to hold `manage_slash_commands`) |
+| `MATTERMOST_CLEANUP_COMMANDS` | Delete the slash commands Hermes created when the gateway stops (default `false`) |
+| `MATTERMOST_TEAM_ID` | Comma-separated team IDs to register slash commands in (default: every team the bot belongs to) |
+| `MATTERMOST_MAX_COMMANDS` | Cap on native slash commands registered (default `100`, clamped 1–200). Core commands kept first; skills trimmed. Overrides `platforms.mattermost.extra.command_menu.max_commands`. |
 | `MATRIX_HOMESERVER` | Matrix homeserver URL (e.g. `https://matrix.org`) |
 | `MATRIX_ACCESS_TOKEN` | Matrix access token for bot authentication |
 | `MATRIX_USER_ID` | Matrix user ID (e.g. `@hermes:matrix.org`) — required for password login, optional with access token |
@@ -716,7 +723,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_ACCEPT_HOOKS` | Auto-approve any unseen shell hooks declared in `config.yaml` without a TTY prompt. Equivalent to `--accept-hooks` or `hooks_auto_accept: true`. |
 | `HERMES_IGNORE_USER_CONFIG` | Skip `~/.hermes/config.yaml` and use built-in defaults (credentials in `.env` still load). Equivalent to `--ignore-user-config`. |
 | `HERMES_IGNORE_RULES` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, memory, and preloaded skills. Equivalent to `--ignore-rules`. |
-| `HERMES_SAFE_MODE` | Troubleshooting mode: disable ALL customizations — skips plugin discovery and MCP server loading. Set automatically by `--safe-mode` (which also sets the two flags above). |
+| `HERMES_SAFE_MODE` | Troubleshooting mode: disable ALL customizations — skips plugin discovery, MCP server loading, and shell-hook registration. Set automatically by `--safe-mode` (which also sets the two flags above). |
 | `HERMES_MD_NAMES` | Comma-separated list of rules-file names to auto-inject (default: `AGENTS.md,CLAUDE.md,.cursorrules,SOUL.md`). |
 | `HERMES_TOOL_PROGRESS` | Deprecated compatibility variable for tool progress display. Prefer `display.tool_progress` in `config.yaml`. |
 | `HERMES_TOOL_PROGRESS_MODE` | Deprecated compatibility variable for tool progress mode. Prefer `display.tool_progress` in `config.yaml`. |

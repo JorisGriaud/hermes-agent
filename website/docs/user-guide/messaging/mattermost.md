@@ -197,6 +197,98 @@ MATTERMOST_HOME_CHANNEL=abc123def456ghi789jkl012mn
 
 Replace the ID with the actual channel ID (click the channel name → View Info → copy the ID).
 
+## Slash commands & interactive approvals
+
+By default Mattermost intercepts any message that starts with `/` and tries to run it as a **native** slash command — so a plain `/approve`, `/model`, or `/new` typed at the bot never reaches Hermes (Mattermost answers "Command with a trigger of … not found", which is especially painful on mobile). To fix this, Hermes registers its commands as native Mattermost slash commands (with autocomplete) and renders dangerous-command approvals as interactive buttons.
+
+Both features are **callback-based**: the Mattermost server POSTs to Hermes when a command is run or a button is clicked, so Hermes must be reachable from your Mattermost server over HTTP(S). This is opt-in — if you don't configure a public URL, the bot keeps working exactly as before (commands typed via the WebSocket path, approvals via the typed `/approve` flow).
+
+### Prerequisites
+
+1. **A public callback URL.** Set `MATTERMOST_PUBLIC_URL` to a base URL your Mattermost server can reach (typically a reverse proxy or tunnel in front of Hermes, e.g. `https://hermes.example.com`). Hermes exposes:
+   - `POST {MATTERMOST_PUBLIC_URL}/mattermost/command` — slash-command executions
+   - `POST {MATTERMOST_PUBLIC_URL}/mattermost/action` — interactive button clicks
+   - `GET  {MATTERMOST_PUBLIC_URL}/mattermost/health` — liveness
+
+   The callback server binds locally to `MATTERMOST_WEBHOOK_HOST:MATTERMOST_WEBHOOK_PORT` (default `0.0.0.0:8066`); point your proxy at that port. Terminate TLS at the proxy.
+
+2. **Permission to manage slash commands.** Registration calls `POST /api/v4/commands`, which requires the bot (or the personal-access-token user) to be able to manage slash commands:
+   - In **System Console → Integrations → Integration Management**, set **Enable Custom Slash Commands** to `true`.
+   - Grant the bot's role the `manage_slash_commands` permission (**System Console → User Management → Permissions**), **or** use a **System Admin** account's personal access token.
+
+   If the token lacks this permission, registration is skipped with a logged warning and the bot still runs — you just won't get autocomplete.
+
+3. **Allow Mattermost to call back to Hermes (SSRF allowlist).** Mattermost blocks outgoing connections (slash-command and button callbacks) to **private/internal IPs** by default, as SSRF protection. If Hermes runs on a private address (e.g. `192.168.x.x`, `10.x.x.x`, `127.0.0.1`), you **must** allow it, or clicking a button shows **"Action integration error"** and slash commands fail even though registration succeeded:
+
+   - **System Console → Environment → Developer → "Allow untrusted internal connections to"** → add the Hermes host (IP or CIDR, **not** a URL), e.g. `192.168.20.230` or `192.168.20.0/24`.
+   - Or, for a Docker deployment, set it on the Mattermost container:
+
+     ```yaml
+     environment:
+       MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS: "192.168.20.230"
+     ```
+
+   **Restart Mattermost** after changing this. (Not needed if `MATTERMOST_PUBLIC_URL` is a public HTTPS hostname that resolves to a public IP.)
+
+:::warning[The callback endpoint is public]
+`MATTERMOST_PUBLIC_URL` is reachable by anyone who can hit it. Hermes defends the endpoints two ways: slash-command executions are rejected unless they present the per-command verification **token** Mattermost issued at registration, and button clicks must carry the per-approval **secret** embedded in the message. In both cases the acting user is then checked against `MATTERMOST_ALLOWED_USERS` (and the gateway allowlist / pairing store) before anything happens. Keep the endpoint behind HTTPS.
+:::
+
+### Configuration
+
+```bash
+# Required for native slash commands + approval buttons
+MATTERMOST_PUBLIC_URL=https://hermes.example.com
+
+# Optional (defaults shown)
+# MATTERMOST_WEBHOOK_HOST=0.0.0.0
+# MATTERMOST_WEBHOOK_PORT=8066
+# MATTERMOST_REGISTER_COMMANDS=true      # register slash commands on connect
+# MATTERMOST_CLEANUP_COMMANDS=false      # delete them again on shutdown
+# MATTERMOST_TEAM_ID=team1,team2         # limit registration to these teams
+#                                        # (default: every team the bot is in)
+# MATTERMOST_MAX_COMMANDS=100            # cap the number of registered commands
+```
+
+The command cap can also be set in `config.yaml` (parity with Telegram):
+
+```yaml
+platforms:
+  mattermost:
+    extra:
+      command_menu:
+        max_commands: 60   # core commands are kept first; skills fill the rest
+```
+
+If you have many skills installed, the `/` menu can get crowded — lowering `max_commands` (e.g. to ~50) keeps the operational core commands and trims the skill entries first.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MATTERMOST_PUBLIC_URL` | _(none)_ | Public base URL the Mattermost server uses to reach Hermes. Required for slash commands and approval buttons. |
+| `MATTERMOST_WEBHOOK_HOST` | `0.0.0.0` | Local interface the callback server binds to. |
+| `MATTERMOST_WEBHOOK_PORT` | `8066` | Local port the callback server binds to. |
+| `MATTERMOST_REGISTER_COMMANDS` | `true` | Register `COMMAND_REGISTRY` as native slash commands on connect. |
+| `MATTERMOST_CLEANUP_COMMANDS` | `false` | Delete the commands Hermes created when the gateway stops. Leave off for idempotent restarts. |
+| `MATTERMOST_TEAM_ID` | _(all teams)_ | Comma-separated team IDs to register in. Empty = every team the bot belongs to. |
+
+### How it behaves
+
+- **Autocomplete.** On connect, Hermes registers its commands (core commands first, then plugin commands, then skills — trimming only skills if a cap is hit, capped at 100 per team by default). Type `/` in a channel where the bot is present and you'll see `/model`, `/new`, `/status`, `/approve`, `/deny`, and the rest with descriptions and argument hints. Registration is **idempotent**: existing triggers are left untouched and re-adopted on restart, so restarting the gateway doesn't create duplicates.
+- **Reserved triggers.** Mattermost's built-in commands can't be overridden — e.g. `/help` (rejected at creation) and `/status` (silently shadowed at runtime). Hermes skips those triggers automatically, so `/status` in Mattermost sets your user status as usual; reach Hermes's status via `@mention` instead.
+- **Interactive approvals.** When the agent hits a dangerous command, Hermes posts a message with four buttons — **Allow Once**, **Allow Session**, **Always Allow**, **Deny** — matching the Discord experience. Tapping a button (as an authorized user) resolves the pending command and rewrites the message to show the decision, disabling the buttons. If `MATTERMOST_PUBLIC_URL` is unset, approvals fall back to the typed `/approve` / `/deny` prompt.
+
+:::info[Reverse proxy]
+The same reverse proxy that fronts the WebSocket can route the callbacks. For nginx:
+
+```nginx
+location /mattermost/ {
+    proxy_pass http://127.0.0.1:8066;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+}
+```
+:::
+
 ## Reply Mode
 
 The `MATTERMOST_REPLY_MODE` setting controls how Hermes posts responses:
